@@ -221,6 +221,57 @@ Query decomposer: qwen:Qwen/Qwen2.5-0.5B-Instruct
 
 ---
 
+## Demo Output
+
+Here is one concrete retrieval trace from the demo corpus:
+
+```text
+Query: "what meetings did I have about architecture?"
+
+Parsed query:
+  time: any time
+  topic: architecture
+  intent: recall
+  source filters: ["meeting"]
+
+Narrative groups:
+  Architecture (2)
+  Career (2)
+  Offsite (1)
+
+Top evidence:
+  1. [meeting] Apr 20
+     Meeting notes: Emma mentioned an architecture blog post about notification systems...
+
+  2. [meeting] May 08
+     Architecture review with CTO — proposed microservice split for the notification system...
+
+  3. [meeting] Mar 01
+     Team offsite — agreed on Q3 priorities: enterprise features, improved search...
+```
+
+This is the happy path: the query parser extracts a source filter (`meeting`), the retrievers search only meeting context, and the grouper clusters the result into an Architecture thread.
+
+The stress suite is deliberately less flattering. For example:
+
+```text
+Query: "what real production incidents happened in the last 3 days?"
+
+Top result:
+  [meeting] May 18
+  Calendar hold: Incident response tabletop rehearsal.
+  Simulated checkout outage for training only; no production issue occurred.
+
+Eval result:
+  FAIL
+  Temporal precision@5: 0.00
+  First relevant rank: none
+```
+
+That failure is useful. The retriever matched "incident" and a recent timestamp, but it did not understand the difference between a real production incident and a simulated drill. The next production feature would be no-answer detection plus stronger event-type classification.
+
+---
+
 ## Eval Results
 
 These results use `sentence-transformers/all-MiniLM-L6-v2` on a deterministic 45-doc synthetic corpus spanning 90 days.
