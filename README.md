@@ -98,6 +98,19 @@ For personal context queries, you need all three. "What did I discuss with Sarah
 
 The dense retriever uses `sentence-transformers/all-MiniLM-L6-v2`, an open-source local embedding model.
 
+### Why optional Qwen decomposition?
+
+The default decomposer is rule-based because evals should be reproducible. There is also an optional local LLM decomposer backed by `Qwen/Qwen2.5-0.5B-Instruct`.
+
+The Qwen decomposer proposes JSON fields for:
+
+- topic
+- intent
+- entities
+- sources
+
+Deterministic code still owns date math and schema repair. That is intentional: a local model can improve extraction for fuzzy wording, but retrieval should not crash because the model emitted malformed JSON.
+
 ### Why source-aware decomposition?
 
 "What was I reading about AI recently?" and "what meetings did I have about architecture?" are not just topic queries. They contain source constraints.
@@ -181,14 +194,17 @@ git clone https://github.com/yourusername/temporal-rag
 cd temporal-rag
 pip install -r requirements.txt
 
-# Run demo queries + eval suite + ablation report
+# Run demo queries + core eval + stress eval + ablation report
 python demo.py
+
+# Use Qwen for query decomposition
+python demo.py --decomposer=qwen --no-ablation
 
 # Demo only
 python demo.py --demo
 
-# Eval only, without ablation
-python demo.py --eval --no-ablation
+# Core eval only
+python demo.py --eval --no-ablation --no-stress
 ```
 
 Expected embedding backend:
@@ -197,21 +213,53 @@ Expected embedding backend:
 Embedding backend: sentence-transformers:sentence-transformers/all-MiniLM-L6-v2
 ```
 
+Optional Qwen decomposer backend:
+
+```
+Query decomposer: qwen:Qwen/Qwen2.5-0.5B-Instruct
+```
+
 ---
 
 ## Eval Results
 
-These results use `sentence-transformers/all-MiniLM-L6-v2` on a deterministic 37-doc synthetic corpus spanning 90 days.
+These results use `sentence-transformers/all-MiniLM-L6-v2` on a deterministic 45-doc synthetic corpus spanning 90 days.
 
 The pass criteria are intentionally stricter than "some relevant doc exists somewhere." A query must return enough context, hit a relevant result in the top ranks, and meet a minimum Precision@5 threshold.
 
 ```
 Passed: 8/8
-Avg temporal precision@5:  0.62
-Avg temporal recall@5:     0.72
+Avg temporal precision@5:  0.65
+Avg temporal recall@5:     0.62
 Avg semantic hit rate:     1.00
-Avg MRR:                   0.917
-Avg compression ratio:     0.73
+Avg MRR:                   0.938
+Avg compression ratio:     0.64
+```
+
+The optional Qwen decomposer also passes the core suite after deterministic repair:
+
+```
+python demo.py --eval --decomposer=qwen --no-ablation --no-stress
+Passed: 8/8
+```
+
+### Stress evals
+
+The project also includes a stress suite that is expected to show failures. These cases add:
+
+- personal chatter that mentions work entities
+- simulated incident drills that should not count as real incidents
+- stale old project notes
+- duplicate transcript fragments
+- cross-time reasoning queries
+
+The point is not to make every stress case pass. The point is to make the retrieval system's current limits visible:
+
+```
+Stress suite: expected failures
+- no-answer detection is missing
+- personal-vs-work ambiguity is weak
+- duplicate/stale context can still outrank current work
 ```
 
 ### Ablation results
@@ -219,11 +267,11 @@ Avg compression ratio:     0.73
 ```
 Variant                         Pass   P@5   R@5   MRR   Compression
 ----------------------------------------------------------------------
-dense only                       8/8   0.57  0.67  0.94     0.79
-sparse only                      8/8   0.68  0.76  0.91     0.79
-recency only                     6/8   0.42  0.35  0.53     0.76
-hybrid / no filters              6/8   0.45  0.59  0.89     0.35
-hybrid + time/source filters     8/8   0.62  0.72  0.92     0.73
+dense only                       8/8   0.65  0.60  0.92     0.74
+sparse only                      7/8   0.62  0.64  0.92     0.74
+recency only                     4/8   0.30  0.21  0.45     0.71
+hybrid / no filters              5/8   0.57  0.58  0.89     0.34
+hybrid + time/source filters     8/8   0.65  0.62  0.94     0.64
 ```
 
 The synthetic corpus is intentionally lexical, so BM25 is strong. The important result is not that hybrid wins every scalar metric. The important result is that recency alone fails broad semantic cases, and hybrid retrieval needs query filters to avoid wasting top-k on the wrong time window or source type.
@@ -239,7 +287,7 @@ temporal-rag/
 │   └── temporal_rag.py      # Core pipeline
 ├── data/
 │   ├── __init__.py
-│   └── synthetic_corpus.py  # 37-doc synthetic personal context corpus
+│   └── synthetic_corpus.py  # 45-doc synthetic personal context corpus
 ├── evals/
 │   ├── __init__.py
 │   └── eval_harness.py      # Eval cases, metrics, ablations
@@ -252,31 +300,37 @@ temporal-rag/
 
 ## Current Limitations & What Would Fix Them
 
-### 1. The corpus is synthetic and too clean
+### 1. No-answer handling is missing
 
-The corpus has realistic shapes, but real personal context is messier: repeated screenshots, incomplete meeting notes, notification fragments, private windows, and contradictory follow-ups.
+The stress eval includes a query about real production incidents in the last 3 days. The corpus only has a simulated incident drill in that window, but the retriever still returns it because there is no abstention layer.
 
-**Fix**: Add a noisier corpus with duplicate events, partial snippets, irrelevant app activity, and near-identical chunks.
+**Fix**: Add a confidence threshold and a "no supported answer" path.
 
-### 2. Query decomposition is still rule-based
+### 2. Personal-vs-work ambiguity is weak
+
+The noisy corpus includes personal Sarah chatter and work Sarah messages. Today, entity matching can overvalue the name without understanding whether the user asked for work decisions.
+
+**Fix**: Add source/app semantics, personal/work classification, and stronger reranking.
+
+### 3. Query decomposition still needs robustness
 
 "The week before I joined" or "sometime around the product launch" requires understanding personal calendar context. The rule-based parser doesn't handle relative references anchored to events.
 
-**Fix**: LLM-based decomposition with a structured output schema and access to personal timeline metadata.
+**Fix**: Use Qwen-style decomposition with structured output, then validate it against personal timeline metadata.
 
-### 3. Narrative grouping is heuristic
+### 4. Narrative grouping is heuristic
 
 The current grouper uses tags and simple labels. It can group obvious work threads, but it does not yet merge evidence into a true answer-ready summary.
 
 **Fix**: Cluster by embedding similarity, then run extractive compression or a small summarisation pass per group.
 
-### 4. Top-5 precision is still uneven
+### 5. Top-5 precision is still uneven
 
 The architecture and incident queries pass because the first relevant item appears early, but their Precision@5 is only 0.20. That is acceptable for a small demo corpus, but not good enough for production.
 
 **Fix**: Add a cross-encoder re-ranker and train/evaluate on human relevance judgements.
 
-### 5. Flat temporal decay misses natural work rhythms
+### 6. Flat temporal decay misses natural work rhythms
 
 The current exponential decay treats all time uniformly. But Monday morning docs about "what I'm working on this week" are more valuable for weekly recall than Friday afternoon docs, even if the Friday docs are more recent.
 

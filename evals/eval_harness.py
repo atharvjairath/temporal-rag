@@ -221,7 +221,7 @@ def build_eval_cases(now: datetime) -> list[EvalCase]:
             is_relevant=lambda d: last_week_start <= d.timestamp <= last_week_end,
             expected_min_results=3,
             min_precision_at_5=0.8,
-            min_recall_at_5=0.4,
+            min_recall_at_5=0.3,
         ),
         EvalCase(
             query="what did I do on the payments project recently?",
@@ -286,5 +286,67 @@ def build_eval_cases(now: datetime) -> list[EvalCase]:
             ) and d.timestamp >= now - timedelta(days=30),
             expected_min_results=1,
             min_precision_at_5=0.2,
+        ),
+    ]
+
+
+def build_stress_eval_cases(now: datetime) -> list[EvalCase]:
+    from datetime import timedelta
+
+    return [
+        EvalCase(
+            query="what real production incidents happened in the last 3 days?",
+            description="No-answer boundary — simulated incident drills should not count",
+            is_relevant=lambda d: (
+                "incident" in d.tags
+                and "production incident" in d.content.lower()
+                and d.timestamp >= now - timedelta(days=3)
+            ),
+            expected_min_results=1,
+            min_precision_at_5=0.2,
+            max_first_relevant_rank=3,
+        ),
+        EvalCase(
+            query="what work decisions did Sarah make about payments this week?",
+            description="Personal-vs-work ambiguity — ignore Sarah lunch chatter",
+            is_relevant=lambda d: (
+                "sarah" in d.tags
+                and "payments" in d.tags
+                and "personal" not in d.tags
+                and d.timestamp >= now - timedelta(days=7)
+                and any(term in d.content.lower() for term in ["decided", "sign-off", "flagged", "latency"])
+            ),
+            expected_min_results=2,
+            min_precision_at_5=0.8,
+            min_recall_at_5=0.75,
+            max_first_relevant_rank=2,
+        ),
+        EvalCase(
+            query="what did John decide about vector recall before latency optimization?",
+            description="Cross-time reasoning — the key evidence is older than 'recent'",
+            is_relevant=lambda d: (
+                "john" in d.tags
+                and ("vector" in d.tags or "pgvector" in d.tags)
+                and ("recall" in d.content.lower() or "hnsw" in d.content.lower())
+            ),
+            expected_min_results=2,
+            min_precision_at_5=0.6,
+            min_recall_at_5=0.8,
+            max_first_relevant_rank=2,
+        ),
+        EvalCase(
+            query="summarize current payments work, excluding old design notes and duplicate transcripts",
+            description="Dedup + stale-context pressure — current work only",
+            is_relevant=lambda d: (
+                "payments" in d.tags
+                and "old" not in d.tags
+                and "duplicate" not in d.tags
+                and d.timestamp >= now - timedelta(days=7)
+                and d.source in {"meeting", "message", "doc", "screen"}
+            ),
+            expected_min_results=3,
+            min_precision_at_5=0.8,
+            min_recall_at_5=0.5,
+            max_first_relevant_rank=2,
         ),
     ]

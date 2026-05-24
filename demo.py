@@ -15,9 +15,10 @@ from datetime import datetime
 sys.path.insert(0, ".")
 
 from data.synthetic_corpus import build_corpus
-from src.temporal_rag import TemporalRAGPipeline
+from src.temporal_rag import LocalLLMQueryDecomposer, TemporalRAGPipeline
 from evals.eval_harness import (
     build_eval_cases,
+    build_stress_eval_cases,
     evaluate,
     print_ablation_report,
     print_report,
@@ -78,30 +79,57 @@ def run_evals(pipeline: TemporalRAGPipeline) -> None:
     print_report(results)
 
 
+def run_stress_evals(pipeline: TemporalRAGPipeline) -> None:
+    cases = build_stress_eval_cases(NOW)
+    results = evaluate(pipeline, cases, now=NOW)
+    print("\nNOTE: Stress failures are expected. They expose known retrieval gaps.")
+    print_report(results)
+
+
 def run_ablation_suite(corpus) -> None:
     cases = build_eval_cases(NOW)
     rows = run_ablation(corpus, cases, now=NOW)
     print_ablation_report(rows)
 
 
+def build_decomposer(args):
+    if "--decomposer=qwen" in args or "--qwen-decomposer" in args:
+        return LocalLLMQueryDecomposer()
+    return None
+
+
 def main() -> None:
     args = sys.argv[1:]
     do_demo = "--eval" not in args
     do_eval = "--demo" not in args
+    do_stress = "--demo" not in args and "--no-stress" not in args
     do_ablation = "--demo" not in args and "--no-ablation" not in args
+    decomposer = build_decomposer(args)
 
     print("Building corpus and indexing documents...")
     corpus = build_corpus(base_date=NOW)
-    pipeline = TemporalRAGPipeline(token_budget=2000, temporal_weight=0.3, top_k=20)
+    pipeline = TemporalRAGPipeline(
+        token_budget=2000,
+        temporal_weight=0.3,
+        top_k=20,
+        query_decomposer=decomposer,
+    )
     pipeline.index(corpus)
     print(f"Indexed {len(corpus)} documents spanning 90 days of context.")
     print(f"Embedding backend: {pipeline.dense.embedder.backend_name}")
+    if decomposer:
+        print(f"Query decomposer: {decomposer.backend_name}")
+    else:
+        print("Query decomposer: rule-based")
 
     if do_demo:
         run_demo(pipeline)
 
     if do_eval:
         run_evals(pipeline)
+
+    if do_stress:
+        run_stress_evals(pipeline)
 
     if do_ablation:
         run_ablation_suite(corpus)

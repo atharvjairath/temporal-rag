@@ -17,6 +17,7 @@ Pipeline stages:
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from typing import Iterable, Optional
 import numpy as np
 
 _MODEL_CACHE = {}
+_CAUSAL_LM_CACHE = {}
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +238,215 @@ class QueryDecomposer:
             if any(re.search(rf"\b{re.escape(keyword)}\b", q) for keyword in keywords):
                 sources.append(source)
         return sources
+
+
+class LocalLLMQueryDecomposer(QueryDecomposer):
+    """
+    Query decomposer backed by a lightweight local Qwen model.
+
+    The model proposes a JSON decomposition. Deterministic parsing still owns
+    date arithmetic and schema repair because bad JSON should not break search.
+    """
+
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"):
+        super().__init__()
+        self.model_name = model_name
+        self.backend_name = f"qwen:{model_name}"
+        self._tokenizer = None
+        self._model = None
+
+    def decompose(self, query: str, now: Optional[datetime] = None) -> DecomposedQuery:
+        now = now or datetime.now()
+        base = super().decompose(query, now)
+        proposal = self._generate_json(query)
+
+        proposed_topic = self._clean_topic(proposal.get("topic"))
+        topic = self._merge_topic(base.topic, proposed_topic)
+        intent = base.intent
+        entities = self._merge_unique(base.named_entities, self._clean_entities(proposal.get("entities")))
+        sources = base.source_filters
+
+        return DecomposedQuery(
+            raw=query,
+            topic=topic,
+            time_start=base.time_start,
+            time_end=base.time_end,
+            time_label=base.time_label,
+            intent=intent,
+            named_entities=entities,
+            source_filters=sources,
+        )
+
+    def _generate_json(self, query: str) -> dict:
+        prompt = self._prompt(query)
+        tokenizer, model = self._load_model()
+        encoded = tokenizer(prompt, return_tensors="pt", truncation=True)
+        output = model.generate(
+            **encoded,
+            max_new_tokens=120,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        generated = output[0][encoded["input_ids"].shape[-1]:]
+        text = tokenizer.decode(generated, skip_special_tokens=True)
+        return self._parse_jsonish(text)
+
+    def _prompt(self, query: str) -> str:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You extract retrieval query metadata. Return only valid JSON "
+                    "with keys topic, intent, entities, sources. Allowed intents: "
+                    "recall, summarise, find_entity. Allowed sources: meeting, "
+                    "screen, message, doc."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Query: " + query + "\n"
+                    "Return compact JSON. Example: "
+                    '{"topic":"payments latency","intent":"recall",'
+                    '"entities":["Sarah"],"sources":["meeting"]}'
+                ),
+            },
+        ]
+        tokenizer, _ = self._load_model()
+        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        return messages[0]["content"] + "\n" + messages[1]["content"] + "\nJSON:"
+
+    def _load_model(self):
+        if self._tokenizer is not None and self._model is not None:
+            return self._tokenizer, self._model
+        if self.model_name in _CAUSAL_LM_CACHE:
+            self._tokenizer, self._model = _CAUSAL_LM_CACHE[self.model_name]
+            return self._tokenizer, self._model
+
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            model = AutoModelForCausalLM.from_pretrained(self.model_name)
+            model.eval()
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to load the local Qwen query decomposition model. "
+                "Install dependencies with `pip install -r requirements.txt` and "
+                f"ensure `{self.model_name}` can be downloaded or is cached locally."
+            ) from exc
+
+        self._tokenizer = tokenizer
+        self._model = model
+        _CAUSAL_LM_CACHE[self.model_name] = (tokenizer, model)
+        return tokenizer, model
+
+    def _parse_jsonish(self, text: str) -> dict:
+        text = text.strip()
+        if not text:
+            return {}
+
+        match = re.search(r"\{.*\}", text, re.S)
+        candidate = match.group(0) if match else text
+        try:
+            parsed = json.loads(candidate)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return self._parse_key_value_text(text)
+
+    def _parse_key_value_text(self, text: str) -> dict:
+        fields = {}
+        for key in ["topic", "intent", "entities", "sources"]:
+            m = re.search(rf"{key}\s*[:=]\s*([^;\n]+)", text, re.I)
+            if m:
+                fields[key] = m.group(1).strip()
+        return fields
+
+    def _clean_topic(self, value) -> str:
+        if not isinstance(value, str):
+            return ""
+        value = value.strip().strip('"')
+        if not value or value.lower() in {"none", "null", "n/a"}:
+            return ""
+        return value.lower()
+
+    def _clean_intent(self, value) -> str:
+        if not isinstance(value, str):
+            return ""
+        value = value.lower().strip()
+        if value in {"recall", "summarise", "summarize"}:
+            return "summarise" if value == "summarize" else value
+        if value in {"find", "find_entity", "entity"}:
+            return "find_entity"
+        return ""
+
+    def _clean_entities(self, value) -> list[str]:
+        blocked = {
+            "today", "yesterday", "recently", "recent", "last_week", "this_week",
+            "last_month", "this_month", "week", "month", "q1", "q2", "q3", "q4",
+        }
+        if isinstance(value, str):
+            parts = re.split(r"[,|]", value)
+            return [
+                p.strip()
+                for p in parts
+                if p.strip() and p.strip().lower() not in {"none", "null"} | blocked
+            ]
+        if isinstance(value, list):
+            return [
+                str(v).strip()
+                for v in value
+                if str(v).strip() and str(v).strip().lower() not in blocked
+            ]
+        return []
+
+    def _clean_sources(self, value) -> list[str]:
+        allowed = {"meeting", "screen", "message", "doc"}
+        if isinstance(value, str):
+            raw = re.split(r"[,|]", value)
+        elif isinstance(value, list):
+            raw = [str(v) for v in value]
+        else:
+            raw = []
+        return [source for source in (item.lower().strip() for item in raw) if source in allowed]
+
+    def _is_useful_topic(self, topic: str) -> bool:
+        if not topic:
+            return False
+        weak = {"meeting", "meetings", "screen", "message", "messages", "doc", "docs"}
+        tokens = set(_tokenize(topic))
+        return bool(tokens - weak)
+
+    def _merge_topic(self, base_topic: str, proposed_topic: str) -> str:
+        if not self._is_useful_topic(proposed_topic):
+            return base_topic
+        if not base_topic or base_topic == proposed_topic:
+            return proposed_topic
+
+        merged = []
+        seen = set()
+        for token in _tokenize(f"{proposed_topic} {base_topic}"):
+            if token not in seen:
+                merged.append(token)
+                seen.add(token)
+        return " ".join(merged)
+
+    def _merge_unique(self, first: list[str], second: list[str]) -> list[str]:
+        merged = []
+        seen = set()
+        for item in first + second:
+            key = item.lower()
+            if key not in seen:
+                merged.append(item)
+                seen.add(key)
+        return merged
 
 
 # ---------------------------------------------------------------------------
@@ -697,9 +908,10 @@ class TemporalRAGPipeline:
         top_k: int = 20,
         active_retrievers: Iterable[str] = ("dense", "sparse", "recency"),
         strict_query_filters: bool = True,
+        query_decomposer: Optional[QueryDecomposer] = None,
     ):
         self.privacy = PrivacyFilter()
-        self.decomposer = QueryDecomposer()
+        self.decomposer = query_decomposer or QueryDecomposer()
         self.dense = DenseRetriever()
         self.sparse = SparseRetriever()
         self.recency = RecencyRetriever()

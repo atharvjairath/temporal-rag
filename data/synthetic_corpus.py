@@ -95,6 +95,22 @@ def build_corpus(base_date: Optional[datetime] = None) -> list[Document]:
         "filter redacts this before indexing.",
         7.2, "doc", ["security", "privacy", "oauth"])
 
+    add("Browser tab: watched a movie review ranking the best search scenes in sci-fi. "
+        "Unrelated personal reading, not connected to the search infrastructure project.",
+        1.2, "screen", ["personal", "movie", "search"])
+
+    add("Slack: Sarah — lunch was fun, let's try the new Thai place next time. "
+        "No work decisions or project updates in this thread.",
+        1.4, "message", ["sarah", "personal"])
+
+    add("Calendar hold: Incident response tabletop rehearsal. Simulated checkout outage "
+        "for training only; no production issue occurred.",
+        1.8, "meeting", ["incident", "training", "calendar"])
+
+    add("Notes from a payments design article: the author argued that split payments "
+        "are mostly a UX problem. Bookmarked for later; unrelated to current sprint.",
+        2.1, "screen", ["payments", "reading", "ux"])
+
     # --- TWO WEEKS AGO (7-14 days) ---
     add("Sprint retrospective — team agreed the auth service refactor went well. "
         "Identified deployment process as a bottleneck. Action item: automate "
@@ -130,6 +146,11 @@ def build_corpus(base_date: Optional[datetime] = None) -> list[Document]:
     add("Deployed auth service v1.8 to production. Zero-downtime rolling deploy. "
         "Monitoring for 24h — no incidents. Closed 3 related Jira tickets.",
         13.0, "doc", ["auth", "deploy", "production"])
+
+    add("Copied meeting transcript fragment: payments latency payments latency payments "
+        "latency. Duplicate capture from a noisy recorder, no new decision beyond the "
+        "existing pooling work.",
+        8.0, "doc", ["payments", "duplicate", "noise"])
 
     # --- LAST MONTH (14-30 days) ---
     add("Q2 planning session — committed to: (1) search v1 launch, "
@@ -168,6 +189,14 @@ def build_corpus(base_date: Optional[datetime] = None) -> list[Document]:
         "bundle size, image loading, excessive re-renders. Sprint plan created.",
         28.0, "meeting", ["mobile", "performance", "audit"])
 
+    add("Slack: John asked whether vector recall should be measured before latency "
+        "optimization. We agreed recall@10 must stay above 0.92 before shipping HNSW.",
+        29.0, "message", ["john", "search", "vector", "recall"])
+
+    add("Meeting notes: Emma mentioned an architecture blog post about notification "
+        "systems. It was interesting, but no product architecture decision was made.",
+        29.4, "meeting", ["architecture", "emma", "reading"])
+
     # --- OLDER (30-90 days) ---
     add("Completed HackerNews reading session — articles on LLM context windows, "
         "RLHF updates, and Postgres 17 features. Bookmarked 4 links.",
@@ -197,6 +226,10 @@ def build_corpus(base_date: Optional[datetime] = None) -> list[Document]:
     add("Started payments v3 design — split payments requires idempotency at "
         "every step. Researched Stripe's approach. Draft doc shared with team.",
         65.0, "doc", ["payments", "design", "stripe"])
+
+    add("Old Slack: Sarah discussed the payments dashboard redesign. This was before "
+        "the latency work and should not answer recent payments queries.",
+        66.0, "message", ["sarah", "payments", "old"])
 
     add("Incident: database failover during peak traffic caused 8 min outage. "
         "Root cause: replica lag exceeded threshold. Fix: increase sync_commit.",
