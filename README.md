@@ -268,7 +268,7 @@ Eval result:
   First relevant rank: none
 ```
 
-That failure is useful. The retriever matched "incident" and a recent timestamp, but it did not understand the difference between a real production incident and a simulated drill. The next production feature would be no-answer detection plus stronger event-type classification.
+That failure is useful. The retriever matched "incident" and a recent timestamp, but the retrieved evidence itself says this was a simulated drill. The right production fix is not just better retrieval; it is an answer synthesis layer that reads the evidence, decides whether it supports the user's claim, and returns "no supported answer" when the context does not justify an answer.
 
 ---
 
@@ -308,7 +308,7 @@ The point is not to make every stress case pass. The point is to make the retrie
 
 ```
 Stress suite: expected failures
-- no-answer detection is missing
+- evidence sufficiency / no-answer handling belongs in the answer LLM
 - personal-vs-work ambiguity is weak
 - duplicate/stale context can still outrank current work
 ```
@@ -351,11 +351,11 @@ temporal-rag/
 
 ## Current Limitations & What Would Fix Them
 
-### 1. No-answer handling is missing
+### 1. Evidence sufficiency is missing
 
-The stress eval includes a query about real production incidents in the last 3 days. The corpus only has a simulated incident drill in that window, but the retriever still returns it because there is no abstention layer.
+The stress eval includes a query about real production incidents in the last 3 days. The corpus only has a simulated incident drill in that window. Retrieval should surface the closest evidence, but the final answer layer should read that evidence and decline to answer because it does not support the user's wording.
 
-**Fix**: Add a confidence threshold and a "no supported answer" path.
+**Fix**: Add an answer LLM that performs evidence sufficiency checks, cites supporting chunks, and returns "no supported answer" when retrieved context contradicts or fails to support the query.
 
 ### 2. Personal-vs-work ambiguity is weak
 
